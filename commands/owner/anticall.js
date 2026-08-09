@@ -178,7 +178,29 @@ async function handleIncomingCall(sock, sender, chatId, callId, callStatus) {
             text: `🚫 *YOU ARE BLOCKED!*\n\n❌ You have been blocked due to excessive calling.\n📞 You are now *BLOCKED for 3 HOURS*.\n⏳ Any calls during this time will be *auto-cut*.\n\n⏱️ Remaining time: 180 minutes\n\nPlease wait and try again later.` 
         });
         
-        console.log(`🔒 ${sender} blocked for 3 hours (spam calls)`);
+        // ACTUALLY BLOCK the user on WhatsApp
+        try {
+            await sock.updateBlockStatus(sender, 'block');
+            console.log(`🔒 ${sender} blocked for 3 hours (spam calls)`);
+        } catch (e) {
+            console.error(`Failed to block ${sender}:`, e.message);
+        }
+        
+        // Auto-unblock after 3 hours
+        setTimeout(async () => {
+            try {
+                const currentBlocked = readBlocked();
+                if (currentBlocked[sender]) {
+                    delete currentBlocked[sender];
+                    writeBlocked(currentBlocked);
+                    await sock.updateBlockStatus(sender, 'unblock');
+                    console.log(`🔓 ${sender} auto-unblocked after 3 hours`);
+                }
+            } catch (e) {
+                console.error(`Failed to auto-unblock ${sender}:`, e.message);
+            }
+        }, 3 * 60 * 60 * 1000); // 3 hours
+        
         return;
     }
 }
