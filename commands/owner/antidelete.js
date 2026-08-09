@@ -215,6 +215,23 @@ async function handleAntideleteCommand(sock, chatId, message, match) {
     }
 }
 
+// Safe media download - returns path or null if download fails
+async function safeDownloadMedia(msg, type, messageId, ext) {
+    try {
+        const stream = await downloadContentFromMessage(msg, type);
+        let buffer = Buffer.from([]);
+        for await (const chunk of stream) {
+            buffer = Buffer.concat([buffer, chunk]);
+        }
+        const mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.${ext}`);
+        await writeFile(mediaPath, buffer);
+        return mediaPath;
+    } catch (err) {
+        console.log(`⚠️ Media download skipped (${type}): ${err.message}`);
+        return null;
+    }
+}
+
 // Store incoming messages
 async function storeMessage(sock, message) {
     try {
@@ -239,43 +256,19 @@ async function storeMessage(sock, message) {
         } else if (message.message?.imageMessage) {
             mediaType = 'image';
             content = message.message.imageMessage.caption || '';
-            const stream = await downloadContentFromMessage(message.message.imageMessage, 'image');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.jpg`);
-            await writeFile(mediaPath, buffer);
+            mediaPath = await safeDownloadMedia(message.message.imageMessage, 'image', messageId, 'jpg');
         } else if (message.message?.stickerMessage) {
             mediaType = 'sticker';
-            const stream = await downloadContentFromMessage(message.message.stickerMessage, 'sticker');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.webp`);
-            await writeFile(mediaPath, buffer);
+            mediaPath = await safeDownloadMedia(message.message.stickerMessage, 'sticker', messageId, 'webp');
         } else if (message.message?.videoMessage) {
             mediaType = 'video';
             content = message.message.videoMessage.caption || '';
-            const stream = await downloadContentFromMessage(message.message.videoMessage, 'video');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.mp4`);
-            await writeFile(mediaPath, buffer);
+            mediaPath = await safeDownloadMedia(message.message.videoMessage, 'video', messageId, 'mp4');
         } else if (message.message?.audioMessage) {
             mediaType = 'audio';
             const mime = message.message.audioMessage.mimetype || '';
             const ext = mime.includes('mpeg') ? 'mp3' : (mime.includes('ogg') ? 'ogg' : 'mp3');
-            const stream = await downloadContentFromMessage(message.message.audioMessage, 'audio');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.${ext}`);
-            await writeFile(mediaPath, buffer);
+            mediaPath = await safeDownloadMedia(message.message.audioMessage, 'audio', messageId, ext);
         } else if (message.message?.documentMessage) {
             mediaType = 'document';
             const docMsg = message.message.documentMessage;
@@ -288,14 +281,8 @@ async function storeMessage(sock, message) {
                 ext = fileName.split('.').pop();
             }
             
-            const stream = await downloadContentFromMessage(docMsg, 'document');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.${ext}`);
-            await writeFile(mediaPath, buffer);
-            console.log(`📄 Document stored: ${fileName} (${mimetype})`);
+            mediaPath = await safeDownloadMedia(docMsg, 'document', messageId, ext);
+            if (mediaPath) console.log(`📄 Document stored: ${fileName} (${mimetype})`);
         } else if (message.message?.documentWithCaptionMessage?.message?.documentMessage) {
             mediaType = 'document';
             const docMsg = message.message.documentWithCaptionMessage.message.documentMessage;
@@ -308,14 +295,8 @@ async function storeMessage(sock, message) {
                 ext = fileName.split('.').pop();
             }
             
-            const stream = await downloadContentFromMessage(docMsg, 'document');
-            let buffer = Buffer.from([]);
-            for await (const chunk of stream) {
-                buffer = Buffer.concat([buffer, chunk]);
-            }
-            mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.${ext}`);
-            await writeFile(mediaPath, buffer);
-            console.log(`📄 Document stored: ${fileName} (${mimetype})`);
+            mediaPath = await safeDownloadMedia(docMsg, 'document', messageId, ext);
+            if (mediaPath) console.log(`📄 Document stored: ${fileName} (${mimetype})`);
         }
 
         // Store only if we have content or media
