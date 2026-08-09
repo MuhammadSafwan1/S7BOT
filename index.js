@@ -552,7 +552,9 @@ async function startGodszealBotInc() {
                 for (const call of calls) {
                     const callerJid = call.from || call.peerJid || call.chatId;
                     if (!callerJid) continue;
-                    await handleIncomingCall(GodszealBotInc, callerJid, callerJid, call.id);
+                    // Only process 'offer' status - ignore ringing/timeout/accept/reject duplicates
+                    if (call.status && call.status !== 'offer') continue;
+                    await handleIncomingCall(GodszealBotInc, callerJid, callerJid, call.id, call.status);
                 }
             } catch (e) {
                 console.error('Anticall handler error:', e);

@@ -97,9 +97,12 @@ async function rejectCall(sock, callId, callerJid) {
 
 // ========== MAIN ANTICALL HANDLER ==========
 
-async function handleIncomingCall(sock, sender, chatId, callId) {
+async function handleIncomingCall(sock, sender, chatId, callId, callStatus) {
     const state = readState();
     if (!state.enabled) return; // Anticall OFF hai toh kuch mat karo
+    
+    // Only process 'offer' status - ignore ringing/timeout/accept/reject duplicates
+    if (callStatus && callStatus !== 'offer') return;
     
     const currentTime = Date.now();
     const threeMinutes = 3 * 60 * 1000; // 3 minutes in milliseconds
