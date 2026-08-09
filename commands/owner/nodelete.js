@@ -1,4 +1,5 @@
 // FILE: commands/owner/nodelete.js
+// 🛡️ ANTI-DELETE SYSTEM: Prevents message deletion when owner is present
 
 const fs = require('fs');
 const path = require('path');
@@ -9,14 +10,14 @@ const isOwnerOrSudo = require('../../lib/isOwner');
 const settings = require('../../settings');
 
 // Owner's number from settings
-const OWNER_NUMBER = settings.ownerNumber ;
+const OWNER_NUMBER = settings.ownerNumber;
 const OWNER_JID = OWNER_NUMBER + '@s.whatsapp.net';
 
 const CONFIG_PATH = path.join(__dirname, '../../data/nodelete.json');
-const TEMP_MEDIA_DIR = path.join(__dirname, '../tmp/nodelete_protected');
+const TEMP_MEDIA_DIR = path.join(__dirname, '../../temp/nodelete_protected');
 
-// Store converted "old" messages
-const convertedMessages = new Map();
+// Store ALL messages in protected chats for recovery
+const protectedMessages = new Map(); // messageId -> {message, sender, timestamp, media}
 
 const contextInfo = {
     forwardingScore: 1,
@@ -32,6 +33,18 @@ if (!fs.existsSync(TEMP_MEDIA_DIR)) {
     fs.mkdirSync(TEMP_MEDIA_DIR, { recursive: true });
 }
 
+// Clean old stored messages every hour (prevent memory leak)
+setInterval(() => {
+    const now = Date.now();
+    const ONE_HOUR = 60 * 60 * 1000;
+    for (const [msgId, data] of protectedMessages.entries()) {
+        if (now - data.storedAt > ONE_HOUR) {
+            protectedMessages.delete(msgId);
+        }
+    }
+    console.log(`🧹 Cleaned old protected messages. Current: ${protectedMessages.size}`);
+}, 60 * 60 * 1000);
+
 function loadNoDeleteConfig() {
     try {
         if (!fs.existsSync(CONFIG_PATH)) return { enabled: false };
@@ -43,6 +56,8 @@ function loadNoDeleteConfig() {
 
 function saveNoDeleteConfig(config) {
     try {
+        const dir = path.dirname(CONFIG_PATH);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
     } catch (err) {
         console.error('Config save error:', err);
@@ -55,7 +70,7 @@ async function isOwnerInGroup(sock, groupJid) {
         const groupMetadata = await sock.groupMetadata(groupJid);
         const participants = groupMetadata.participants;
         const ownerPresent = participants.some(p => p.id === OWNER_JID);
-        console.log(`👑 Owner ${OWNER_NUMBER} present in group: ${ownerPresent}`);
+        console.log(`👑 Owner ${OWNER_NUMBER} present in group ${groupJid.split('@')[0]}: ${ownerPresent}`);
         return ownerPresent;
     } catch (err) {
         console.error('Error checking owner in group:', err);
@@ -81,10 +96,10 @@ async function shouldProtectChat(sock, chatId) {
     if (isGroup) {
         const ownerInGroup = await isOwnerInGroup(sock, chatId);
         if (ownerInGroup) {
-            console.log(`🛡️ Group has owner - Protection ACTIVE for ${chatId}`);
+            console.log(`🛡️ Group has owner - Protection ACTIVE for ${chatId.split('@')[0]}`);
             return true;
         } else {
-            console.log(`❌ Owner not in group - Protection INACTIVE for ${chatId}`);
+            console.log(`❌ Owner not in group - Protection INACTIVE for ${chatId.split('@')[0]}`);
             return false;
         }
     }
@@ -92,228 +107,143 @@ async function shouldProtectChat(sock, chatId) {
     return false;
 }
 
-// Send message with old timestamp (5 days old - removes delete/edit options)
-async function sendAsOldMessage(sock, chatId, content, mediaType = 'text', mediaBuffer = null, options = {}) {
-    // WhatsApp only allows delete for everyone for ~3-5 minutes
-    // By making it 5 days old, delete for everyone option disappears completely
-    const OLD_TIMESTAMP = Math.floor(Date.now() / 1000) - (5 * 24 * 60 * 60);
-    
-    let sentMsg;
-    
-    if (mediaType === 'text' && content) {
-        sentMsg = await sock.sendMessage(chatId, {
-            text: content,
-            contextInfo: contextInfo
-        });
-    } 
-    else if (mediaType === 'image' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            image: mediaBuffer,
-            caption: content || '',
-            contextInfo: contextInfo
-        });
-    }
-    else if (mediaType === 'video' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            video: mediaBuffer,
-            caption: content || '',
-            contextInfo: contextInfo
-        });
-    }
-    else if (mediaType === 'sticker' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            sticker: mediaBuffer,
-            contextInfo: contextInfo
-        });
-    }
-    else if (mediaType === 'voice' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            audio: mediaBuffer,
-            ptt: true,
-            mimetype: 'audio/ogg',
-            contextInfo: contextInfo
-        });
-    }
-    else if (mediaType === 'audio' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            audio: mediaBuffer,
-            mimetype: 'audio/mpeg',
-            contextInfo: contextInfo
-        });
-    }
-    else if (mediaType === 'document' && mediaBuffer) {
-        sentMsg = await sock.sendMessage(chatId, {
-            document: mediaBuffer,
-            fileName: options.fileName || 'document',
-            caption: content || '',
-            contextInfo: contextInfo
-        });
-    }
-    
-    return sentMsg;
-}
-
-// Main function: Convert any new message to an "old" message
+// 🛡️ MAIN FUNCTION: Store messages for recovery when deleted
 async function convertToProtectedMessage(sock, message) {
     try {
         if (!message.key?.id) return;
         
         const chatId = message.key.remoteJid;
+        const senderId = message.key.participant || message.key.remoteJid;
         
         // Check if protection should be active
         const shouldProtect = await shouldProtectChat(sock, chatId);
         if (!shouldProtect) return;
         
-        // Don't convert messages that are already old (> 1 hour)
-        const currentTimestamp = message.messageTimestamp || Math.floor(Date.now() / 1000);
-        const messageAge = (Date.now() / 1000) - currentTimestamp;
-        if (messageAge > 3600) return;
+        // Don't store bot's own messages
+        if (message.key.fromMe) {
+            console.log(`🤖 Bot's own message - not storing`);
+            return;
+        }
+        
+        // Don't store owner's messages (optional - remove this if you want to protect owner too)
+        if (senderId === OWNER_JID) {
+            console.log(`👑 Owner's message - not storing (owner can delete their own)`);
+            return;
+        }
         
         const messageId = message.key.id;
+        console.log(`🛡️ STORING message ${messageId} from ${senderId.split('@')[0]} for anti-delete protection`);
         
         // Extract message content
         let content = '';
         let mediaType = 'text';
         let mediaBuffer = null;
         let fileName = '';
-        let mimetype = '';
+        let caption = '';
         
-        const sender = message.key.participant || message.key.remoteJid;
-        
-        // Don't convert owner's own messages (optional - remove if you want to protect owner too)
-        if (sender === OWNER_JID) {
-            console.log(`👑 Owner's message - not converting`);
-            return;
-        }
-        
-        console.log(`🛡️ Converting message to protected (5 days old) from ${sender}`);
-        
-        // Extract content
+        // Text messages
         if (message.message?.conversation) {
             content = message.message.conversation;
         } 
         else if (message.message?.extendedTextMessage?.text) {
             content = message.message.extendedTextMessage.text;
         }
+        // Image messages
         else if (message.message?.imageMessage) {
             mediaType = 'image';
-            content = message.message.imageMessage.caption || '';
-            const stream = await downloadContentFromMessage(message.message.imageMessage, 'image');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
+            caption = message.message.imageMessage.caption || '';
+            try {
+                const stream = await downloadContentFromMessage(message.message.imageMessage, 'image');
+                const chunks = [];
+                for await (const chunk of stream) {
+                    chunks.push(chunk);
+                }
+                mediaBuffer = Buffer.concat(chunks);
+            } catch (err) {
+                console.error('Failed to download image:', err.message);
             }
-            mediaBuffer = Buffer.concat(chunks);
         }
-        else if (message.message?.viewOnceMessageV2?.message?.imageMessage) {
-            mediaType = 'image';
-            const imgMsg = message.message.viewOnceMessageV2.message.imageMessage;
-            content = imgMsg.caption || '';
-            const stream = await downloadContentFromMessage(imgMsg, 'image');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
-            }
-            mediaBuffer = Buffer.concat(chunks);
-        }
-        else if (message.message?.viewOnceMessageV2?.message?.videoMessage) {
-            mediaType = 'video';
-            const vidMsg = message.message.viewOnceMessageV2.message.videoMessage;
-            content = vidMsg.caption || '';
-            const stream = await downloadContentFromMessage(vidMsg, 'video');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
-            }
-            mediaBuffer = Buffer.concat(chunks);
-        }
+        // Video messages
         else if (message.message?.videoMessage) {
             mediaType = 'video';
-            content = message.message.videoMessage.caption || '';
-            const stream = await downloadContentFromMessage(message.message.videoMessage, 'video');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
+            caption = message.message.videoMessage.caption || '';
+            try {
+                const stream = await downloadContentFromMessage(message.message.videoMessage, 'video');
+                const chunks = [];
+                for await (const chunk of stream) {
+                    chunks.push(chunk);
+                }
+                mediaBuffer = Buffer.concat(chunks);
+            } catch (err) {
+                console.error('Failed to download video:', err.message);
             }
-            mediaBuffer = Buffer.concat(chunks);
         }
+        // Sticker messages
         else if (message.message?.stickerMessage) {
             mediaType = 'sticker';
-            const stream = await downloadContentFromMessage(message.message.stickerMessage, 'sticker');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
+            try {
+                const stream = await downloadContentFromMessage(message.message.stickerMessage, 'sticker');
+                const chunks = [];
+                for await (const chunk of stream) {
+                    chunks.push(chunk);
+                }
+                mediaBuffer = Buffer.concat(chunks);
+            } catch (err) {
+                console.error('Failed to download sticker:', err.message);
             }
-            mediaBuffer = Buffer.concat(chunks);
         }
-        else if (message.message?.audioMessage && message.message.audioMessage.ptt === true) {
-            mediaType = 'voice';
-            const stream = await downloadContentFromMessage(message.message.audioMessage, 'audio');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
-            }
-            mediaBuffer = Buffer.concat(chunks);
-        }
+        // Audio/Voice messages
         else if (message.message?.audioMessage) {
-            mediaType = 'audio';
-            const stream = await downloadContentFromMessage(message.message.audioMessage, 'audio');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
+            mediaType = message.message.audioMessage.ptt ? 'voice' : 'audio';
+            try {
+                const stream = await downloadContentFromMessage(message.message.audioMessage, 'audio');
+                const chunks = [];
+                for await (const chunk of stream) {
+                    chunks.push(chunk);
+                }
+                mediaBuffer = Buffer.concat(chunks);
+            } catch (err) {
+                console.error('Failed to download audio:', err.message);
             }
-            mediaBuffer = Buffer.concat(chunks);
         }
+        // Document messages
         else if (message.message?.documentMessage) {
             mediaType = 'document';
-            const docMsg = message.message.documentMessage;
-            content = docMsg.caption || '';
-            fileName = docMsg.fileName || 'document';
-            mimetype = docMsg.mimetype || 'application/octet-stream';
-            const stream = await downloadContentFromMessage(docMsg, 'document');
-            const chunks = [];
-            for await (const chunk of stream) {
-                chunks.push(chunk);
+            caption = message.message.documentMessage.caption || '';
+            fileName = message.message.documentMessage.fileName || 'document';
+            try {
+                const stream = await downloadContentFromMessage(message.message.documentMessage, 'document');
+                const chunks = [];
+                for await (const chunk of stream) {
+                    chunks.push(chunk);
+                }
+                mediaBuffer = Buffer.concat(chunks);
+            } catch (err) {
+                console.error('Failed to download document:', err.message);
             }
-            mediaBuffer = Buffer.concat(chunks);
         }
         
-        // Send the message as an "old" message
-        if (content || mediaBuffer) {
-            const oldMessage = await sendAsOldMessage(sock, chatId, content, mediaType, mediaBuffer, {
-                fileName,
-                mimetype
-            });
-            
-            if (oldMessage && oldMessage.key) {
-                // Store the old message info
-                convertedMessages.set(oldMessage.key.id, {
-                    content,
-                    mediaType,
-                    sender,
-                    chatId,
-                    originalId: messageId,
-                    convertedAt: Date.now()
-                });
-                
-                console.log(`✅ Message converted to protected (5 days old): ${oldMessage.key.id}`);
-                
-                // Delete the original message
-                try {
-                    await sock.sendMessage(chatId, { delete: message.key });
-                    console.log(`🗑️ Original message deleted: ${messageId}`);
-                } catch (err) {
-                    console.log('Could not delete original:', err.message);
-                }
-            }
-        }
+        // Store the message data
+        protectedMessages.set(messageId, {
+            content: content || caption,
+            mediaType,
+            mediaBuffer,
+            fileName,
+            senderId,
+            senderName: message.pushName || senderId.split('@')[0],
+            chatId,
+            timestamp: message.messageTimestamp || Math.floor(Date.now() / 1000),
+            storedAt: Date.now()
+        });
+        
+        console.log(`✅ Message stored: ${messageId} | Type: ${mediaType} | From: ${senderId.split('@')[0]}`);
         
     } catch (err) {
         console.error('convertToProtectedMessage error:', err);
     }
 }
 
-// Handle any delete attempts (backup protection)
+// 🚨 HANDLE DELETE ATTEMPTS: Restore deleted messages
 async function handleDeletePrevention(sock, revocationMessage) {
     try {
         const protocolMessage = revocationMessage.message?.protocolMessage;
@@ -323,34 +253,192 @@ async function handleDeletePrevention(sock, revocationMessage) {
         if (!deletedMessageId) return;
         
         const chatId = revocationMessage.key.remoteJid;
+        const deleterId = revocationMessage.key.participant || revocationMessage.key.remoteJid;
         
+        console.log(`🔄 DELETE DETECTED | Message: ${deletedMessageId} | By: ${deleterId.split('@')[0]}`);
+        
+        // Check if protection is active
         const shouldProtect = await shouldProtectChat(sock, chatId);
-        if (!shouldProtect) return;
-        
-        // Check if this was one of our converted messages
-        const converted = convertedMessages.get(deletedMessageId);
-        if (!converted) return;
-        
-        console.log(`🛡️ Delete attempt on protected message: ${deletedMessageId}`);
-        
-        // Resend the message if someone tries to delete
-        if (converted.mediaBuffer) {
-            // Resend with media
-            if (converted.mediaType === 'image') {
-                await sock.sendMessage(chatId, { image: converted.mediaBuffer, caption: converted.content });
-            } else if (converted.mediaType === 'video') {
-                await sock.sendMessage(chatId, { video: converted.mediaBuffer, caption: converted.content });
-            } else if (converted.mediaType === 'sticker') {
-                await sock.sendMessage(chatId, { sticker: converted.mediaBuffer });
-            } else if (converted.content) {
-                await sock.sendMessage(chatId, { text: converted.content });
-            }
-        } else if (converted.content) {
-            await sock.sendMessage(chatId, { text: converted.content });
+        if (!shouldProtect) {
+            console.log(`❌ Protection not active in this chat - allowing delete`);
+            return;
         }
+        
+        // Check if this was a protected message
+        const stored = protectedMessages.get(deletedMessageId);
+        if (!stored) {
+            console.log(`⚠️ Message ${deletedMessageId} not found in protected storage`);
+            return;
+        }
+        
+        // Allow owner to delete their own messages
+        if (deleterId === OWNER_JID) {
+            console.log(`👑 Owner deleted their own message - allowing`);
+            protectedMessages.delete(deletedMessageId);
+            return;
+        }
+        
+        console.log(`🛡️ BLOCKING DELETE | Restoring message from: ${stored.senderName}`);
+        
+        // Format timestamp
+        const msgDate = new Date(stored.timestamp * 1000);
+        const timeStr = msgDate.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+        });
+        const dateStr = msgDate.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+        });
+        
+        // Build restoration message
+        const header = `╔═══════════════════╗\n║  🚫 DELETE BLOCKED  ║\n╚═══════════════════╝\n\n`;
+        const info = `👤 *Sender:* ${stored.senderName}\n🕐 *Time:* ${timeStr}, ${dateStr}\n❌ *Deleted by:* ${deleterId === stored.senderId ? 'Sender' : 'Someone else'}\n\n`;
+        const footer = `\n\n━━━━━━━━━━━━━━━━━━━\n🛡️ *Anti-Delete Protection Active*\n👑 Owner is present in this chat`;
+        
+        // Restore the message
+        if (stored.mediaType === 'text' && stored.content) {
+            await sock.sendMessage(chatId, {
+                text: `${header}${info}📝 *Message:*\n${stored.content}${footer}`,
+                contextInfo: contextInfo
+            });
+        } 
+        else if (stored.mediaType === 'image' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                image: stored.mediaBuffer,
+                caption: `${header}${info}${stored.content ? `📝 *Caption:* ${stored.content}\n` : ''}${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        else if (stored.mediaType === 'video' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                video: stored.mediaBuffer,
+                caption: `${header}${info}${stored.content ? `📝 *Caption:* ${stored.content}\n` : ''}${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        else if (stored.mediaType === 'sticker' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                sticker: stored.mediaBuffer,
+                contextInfo: contextInfo
+            });
+            await sock.sendMessage(chatId, {
+                text: `${header}${info}${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        else if (stored.mediaType === 'voice' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                audio: stored.mediaBuffer,
+                ptt: true,
+                mimetype: 'audio/ogg; codecs=opus',
+                contextInfo: contextInfo
+            });
+            await sock.sendMessage(chatId, {
+                text: `${header}${info}🎤 *Voice message restored*${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        else if (stored.mediaType === 'audio' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                audio: stored.mediaBuffer,
+                mimetype: 'audio/mpeg',
+                contextInfo: contextInfo
+            });
+            await sock.sendMessage(chatId, {
+                text: `${header}${info}🎵 *Audio restored*${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        else if (stored.mediaType === 'document' && stored.mediaBuffer) {
+            await sock.sendMessage(chatId, {
+                document: stored.mediaBuffer,
+                fileName: stored.fileName || 'document',
+                caption: `${header}${info}${stored.content ? `📝 *Caption:* ${stored.content}\n` : ''}${footer}`,
+                contextInfo: contextInfo
+            });
+        }
+        
+        console.log(`✅ Message restored successfully`);
+        
+        // Keep the message in storage for potential future attempts
+        // protectedMessages.delete(deletedMessageId); // Don't delete yet
         
     } catch (err) {
         console.error('handleDeletePrevention error:', err);
+    }
+}
+
+// 🚨 HANDLE EDIT ATTEMPTS: Show original message
+async function handleEditPrevention(sock, editMessage) {
+    try {
+        const protocolMessage = editMessage.message?.protocolMessage;
+        if (!protocolMessage || protocolMessage.type !== 1) return;
+        
+        const editedMessageId = protocolMessage.key?.id;
+        if (!editedMessageId) return;
+        
+        const chatId = editMessage.key.remoteJid;
+        const editorId = editMessage.key.participant || editMessage.key.remoteJid;
+        
+        console.log(`✏️ EDIT DETECTED | Message: ${editedMessageId} | By: ${editorId.split('@')[0]}`);
+        
+        // Check if protection is active
+        const shouldProtect = await shouldProtectChat(sock, chatId);
+        if (!shouldProtect) {
+            console.log(`❌ Protection not active in this chat - allowing edit`);
+            return;
+        }
+        
+        // Check if this was a protected message
+        const stored = protectedMessages.get(editedMessageId);
+        if (!stored) {
+            console.log(`⚠️ Message ${editedMessageId} not found in protected storage`);
+            return;
+        }
+        
+        // Allow owner to edit their own messages
+        if (editorId === OWNER_JID) {
+            console.log(`👑 Owner edited their own message - allowing`);
+            return;
+        }
+        
+        console.log(`🛡️ BLOCKING EDIT | Showing original from: ${stored.senderName}`);
+        
+        // Extract new edited text
+        const newText = protocolMessage.editedMessage?.conversation || 
+                       protocolMessage.editedMessage?.extendedTextMessage?.text || 
+                       '[Media/Complex message]';
+        
+        // Format timestamp
+        const msgDate = new Date(stored.timestamp * 1000);
+        const timeStr = msgDate.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: true 
+        });
+        const dateStr = msgDate.toLocaleDateString('en-US', { 
+            month: 'short', 
+            day: 'numeric' 
+        });
+        
+        // Build edit notification message
+        const header = `╔═══════════════════╗\n║  ✏️ EDIT BLOCKED  ║\n╚═══════════════════╝\n\n`;
+        const info = `👤 *Sender:* ${stored.senderName}\n🕐 *Original Time:* ${timeStr}, ${dateStr}\n\n`;
+        const originalMsg = `📝 *ORIGINAL MESSAGE:*\n${stored.content}\n\n`;
+        const editedMsg = `✏️ *TRIED TO EDIT TO:*\n${newText}\n\n`;
+        const footer = `━━━━━━━━━━━━━━━━━━━\n🛡️ *Anti-Edit Protection Active*\n👑 Owner is present in this chat`;
+        
+        await sock.sendMessage(chatId, {
+            text: `${header}${info}${originalMsg}${editedMsg}${footer}`,
+            contextInfo: contextInfo
+        });
+        
+        console.log(`✅ Edit blocked and reported successfully`);
+        
+    } catch (err) {
+        console.error('handleEditPrevention error:', err);
     }
 }
 
@@ -361,7 +449,7 @@ async function handleNoDeleteCommand(sock, chatId, message, match) {
     
     if (!message.key.fromMe && !isOwner) {
         return sock.sendMessage(chatId, {
-            text: '*Only the bot owner can use this command.*',
+            text: '❌ *Only the bot owner can use this command.*',
             contextInfo: contextInfo
         }, { quoted: message });
     }
@@ -373,7 +461,54 @@ async function handleNoDeleteCommand(sock, chatId, message, match) {
         const ownerInGroup = isGroup ? await isOwnerInGroup(sock, chatId) : false;
         
         return sock.sendMessage(chatId, {
-            text: `🛡️ *PROTECTION SYSTEM*\n\n<══════════════════>\n\n📌 *Global Status:* ${config.enabled ? '✅ ACTIVE' : '❌ INACTIVE'}\n👑 *Owner in this chat:* ${ownerInGroup ? '✅ YES' : '❌ NO'}\n\n*.nodelete on* - Enable protection\n*.nodelete off* - Disable protection\n\n<══════════════════>\n\n*When ACTIVE and owner is present:*\n🔒 ALL messages become PERMANENT\n❌ "Delete for everyone" option DISAPPEARS\n✏️ "Edit" option DISAPPEARS\n💡 Users can only use "Delete for me"\n\n<══════════════════>\n\n*Applies to:*\n• 📱 Direct messages to owner\n• 👥 Any group where owner is present\n\n<══════════════════>\n\n📞 *Owner:* +92 3345216246`,
+            text: `╔═══════════════════════╗
+║  🛡️ ANTI-DELETE SYSTEM  ║
+╚═══════════════════════╝
+
+📊 *SYSTEM STATUS*
+━━━━━━━━━━━━━━━━━━━━━
+
+🔘 *Global Status:* ${config.enabled ? '✅ ACTIVE' : '❌ INACTIVE'}
+👑 *Owner in this chat:* ${ownerInGroup ? '✅ YES' : '❌ NO'}
+💾 *Messages stored:* ${protectedMessages.size}
+
+━━━━━━━━━━━━━━━━━━━━━
+
+⚙️ *COMMANDS*
+
+• *.nodelete on* - Enable protection
+• *.nodelete off* - Disable protection
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🛡️ *HOW IT WORKS*
+
+When ACTIVE and owner is present:
+✅ All messages are stored in memory
+✅ If someone deletes their message
+✅ Bot immediately restores it
+✅ Shows who deleted it and when
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📍 *APPLIES TO*
+
+• 📱 Direct messages to owner
+• 👥 Any group where owner is member
+
+━━━━━━━━━━━━━━━━━━━━━
+
+⚠️ *IMPORTANT NOTES*
+
+• Owner can still delete own messages
+• Works for text, images, videos, etc.
+• Messages stored for 1 hour max
+• Requires bot to have internet access
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📞 *Owner Contact*
++92 3345216246`,
             contextInfo: contextInfo
         }, { quoted: message });
     }
@@ -383,23 +518,65 @@ async function handleNoDeleteCommand(sock, chatId, message, match) {
         saveNoDeleteConfig(config);
         
         await sock.sendMessage(chatId, {
-            text: `🛡️ *PROTECTION ACTIVATED* 🛡️\n\n<══════════════════>\n\n✅ System is now ACTIVE!\n\n*How it works:*\n• When you (owner) are in a group, all messages there become protected\n• Direct messages to you become protected\n• Messages become 5 days old instantly\n• "Delete for everyone" and "Edit" options DISAPPEAR\n• Users can only "Delete for me"\n\n<══════════════════>\n\n⚠️ *Test it in any group where you are present!*\n\n<══════════════════>\n\n📞 *Contact:* +92 3345216246`,
+            text: `╔═══════════════════════╗
+║  ✅ PROTECTION ACTIVE  ║
+╚═══════════════════════╝
+
+🛡️ *Anti-Delete System Enabled!*
+
+━━━━━━━━━━━━━━━━━━━━━
+
+✅ System is now monitoring all messages
+✅ Deletions will be blocked and restored
+✅ Protection active in:
+   • Groups where you are member
+   • Direct messages to you
+
+━━━━━━━━━━━━━━━━━━━━━
+
+🧪 *Test It Now!*
+
+1. Send a test message in any group where you are present
+2. Try to delete it
+3. Bot will immediately restore it
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📞 *Contact:* +92 3345216246`,
             contextInfo: contextInfo
-        });
+        }, { quoted: message });
         
     } else if (match === 'off') {
         config.enabled = false;
         saveNoDeleteConfig(config);
         
+        // Clear stored messages
+        protectedMessages.clear();
+        
         await sock.sendMessage(chatId, {
-            text: `🔓 *PROTECTION DEACTIVATED* 🔓\n\n<══════════════════>\n\n❌ System is now INACTIVE.\n\nMessages will appear normally with real timestamps.\n\n<══════════════════>\n\n📞 *Contact:* +92 3345216246`,
+            text: `╔═══════════════════════╗
+║  ❌ PROTECTION DISABLED  ║
+╚═══════════════════════╝
+
+🔓 *Anti-Delete System Deactivated*
+
+━━━━━━━━━━━━━━━━━━━━━
+
+❌ System is now inactive
+🗑️ Stored messages cleared
+📝 Messages can be deleted normally
+
+━━━━━━━━━━━━━━━━━━━━━
+
+📞 *Contact:* +92 3345216246`,
             contextInfo: contextInfo
-        });
+        }, { quoted: message });
     }
 }
 
 module.exports = {
     handleNoDeleteCommand,
     handleDeletePrevention,
-    convertToProtectedMessage  // Main function to call on every message
+    handleEditPrevention,
+    convertToProtectedMessage
 };

@@ -153,7 +153,7 @@ const soraCommand = require('./commands/ai/sora');
 const { touchUser } = require('./lib/premium/database');
 const { storeLinkedUser, storeChannelAction } = require('./lib/mongoStore');
 const { handleAllDeleteCommand, handleAllDeleteRevocation, storeAllDeleteMessage } = require('./commands/owner/alldelete');
-const { handleNoDeleteCommand,  handleDeletePrevention, convertToProtectedMessage } = require('./commands/owner/nodelete');
+const { handleNoDeleteCommand,  handleDeletePrevention, handleEditPrevention, convertToProtectedMessage } = require('./commands/owner/nodelete');
 
 // Global settings
 global.packname = settings.packname;

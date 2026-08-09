@@ -545,38 +545,18 @@ async function startGodszealBotInc() {
         }
     }
 })
-        // Track recently-notified callers to avoid spamming messages
-        const antiCallNotified = new Set();
-
-        // Anticall handler: block callers when enabled
+        // Anticall handler: uses anticall.js logic (warnings → block after 4 calls in 3 min)
+        const { handleIncomingCall } = require('./commands/owner/anticall');
         GodszealBotInc.ev.on('call', async (calls) => {
             try {
-                const { readState: readAnticallState } = require('./commands/owner/anticall');
-                const state = readAnticallState();
-                if (!state.enabled) return;
                 for (const call of calls) {
                     const callerJid = call.from || call.peerJid || call.chatId;
                     if (!callerJid) continue;
-                    try {
-                        try {
-                            if (typeof GodszealBotInc.rejectCall === 'function' && call.id) {
-                                await GodszealBotInc.rejectCall(call.id, callerJid);
-                            } else if (typeof GodszealBotInc.sendCallOfferAck === 'function' && call.id) {
-                                await GodszealBotInc.sendCallOfferAck(call.id, callerJid, 'reject');
-                            }
-                        } catch {}
-
-                        if (!antiCallNotified.has(callerJid)) {
-                            antiCallNotified.add(callerJid);
-                            setTimeout(() => antiCallNotified.delete(callerJid), 60000);
-                            await GodszealBotInc.sendMessage(callerJid, { text: '📵 Anticall is enabled. Your call was rejected and you will be blocked.' });
-                        }
-                    } catch {}
-                    setTimeout(async () => {
-                        try { await GodszealBotInc.updateBlockStatus(callerJid, 'block'); } catch {}
-                    }, 800);
+                    await handleIncomingCall(GodszealBotInc, callerJid, callerJid, call.id);
                 }
-            } catch (e) {}
+            } catch (e) {
+                console.error('Anticall handler error:', e);
+            }
         });
 
         GodszealBotInc.ev.on('group-participants.update', async (update) => {
