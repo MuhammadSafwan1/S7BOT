@@ -9,6 +9,7 @@ const settings = require('../../settings');
 
 const messageStore = new Map();
 const CONFIG_PATH = path.join(__dirname, '../../data/alldelete.json');
+const resolvePhone = require('../../lib/resolvePhone');
 const TEMP_MEDIA_DIR = path.join(__dirname, '../tmp');
 
 // Owner information from settings.js (no default value)
@@ -266,7 +267,10 @@ async function storeAllDeleteMessage(sock, message) {
                 group: message.key.remoteJid.endsWith('@g.us') ? message.key.remoteJid : null,
                 timestamp: new Date().toISOString()
             });
-            console.log(`📝 Message stored: ${messageId} (Type: ${mediaType || 'text'})`);
+            const preview = content
+                ? content.replace(/\s+/g, ' ').slice(0, 80)
+                : (mediaType ? `(${mediaType})` : '');
+            console.log(`📝 Message stored [alldelete]: ${messageId} | From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: ${preview}`);
         }
 
     } catch (err) {
@@ -338,8 +342,8 @@ async function handleAllDeleteRevocation(sock, revocationMessage) {
         // Get names for mentions
         const senderName = await getContactName(sock, sender);
         const deleterName = await getContactName(sock, deletedBy);
-        const senderNumber = sender.split('@')[0];
-        const deleterNumber = deletedBy.split('@')[0];
+        const senderNumber = await resolvePhone(sock, sender);
+        const deleterNumber = await resolvePhone(sock, deletedBy);
         
         const isSelfDelete = (sender === deletedBy);
         

@@ -222,12 +222,6 @@ async function handleMessages(sock, messageUpdate, printLog) {
         return;
     }
 }
-        
-        // Store message for antidelete feature
-        if (message.message) {
-            storeMessage(sock, message);
-        }
-
 
         chatId = message.key.remoteJid; // ← FIXED: assign without const/let
         const senderId = message.key.participant || message.key.remoteJid;

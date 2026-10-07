@@ -3,9 +3,9 @@ const settings = {
   author: 'S7 SAFWAN',
   botName: 'S7 SAFWAN',
   botOwner: 'S7 SAFWAN',
-  ownerNumber: '923345216246',          // ← Your Pakistan number
-  ownerNumbers: ['923345216246'],       // ← Your number
-  devNumbers: ['923345216246'],         // ← Your number
+  ownerNumber: '923295106906',          // ← Your Pakistan number
+  ownerNumbers: ['923295106906'],       // ← Your number
+  devNumbers: ['923295106906'],         // ← Your number
   commandPrefix: '.',
   newsletterJid: '120363419197664425@newsletter',
   telegramHandlersDir: 'handlers',
@@ -17,7 +17,7 @@ const settings = {
   maxStoreMessages: 20,
   storeWriteInterval: 10000,
   description: 'WhatsApp Bot by S7 SAFWAN',
-  version: '3.1.0',
+  version: '3.1.1',
   updateZipUrl: 'https://github.com/MuhammadSafwan1/S7BOT/archive/refs/heads/main.zip',
   pairApiBase: process.env.PAIR_API_BASE || '',
   mongoUri: process.env.MONGO_URI || '',

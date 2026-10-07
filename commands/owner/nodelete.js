@@ -14,6 +14,7 @@ const OWNER_NUMBER = settings.ownerNumber;
 const OWNER_JID = OWNER_NUMBER + '@s.whatsapp.net';
 
 const CONFIG_PATH = path.join(__dirname, '../../data/nodelete.json');
+const resolvePhone = require('../../lib/resolvePhone');
 const TEMP_MEDIA_DIR = path.join(__dirname, '../../temp/nodelete_protected');
 
 // Store ALL messages in protected chats for recovery
@@ -132,7 +133,7 @@ async function convertToProtectedMessage(sock, message) {
         }
         
         const messageId = message.key.id;
-        console.log(`🛡️ STORING message ${messageId} from ${senderId.split('@')[0]} for anti-delete protection`);
+        console.log(`🛡️ STORING message ${messageId} from ${await resolvePhone(sock, senderId)} for anti-delete protection`);
         
         // Extract message content
         let content = '';
@@ -236,7 +237,10 @@ async function convertToProtectedMessage(sock, message) {
             storedAt: Date.now()
         });
         
-        console.log(`✅ Message stored: ${messageId} | Type: ${mediaType} | From: ${senderId.split('@')[0]}`);
+        const preview = (content || caption)
+            ? (content || caption).replace(/\s+/g, ' ').slice(0, 80)
+            : `(${mediaType})`;
+        console.log(`✅ Message stored: ${messageId} | Type: ${mediaType} | From: ${await resolvePhone(sock, senderId)} | Text: ${preview}`);
         
     } catch (err) {
         console.error('convertToProtectedMessage error:', err);
@@ -255,7 +259,7 @@ async function handleDeletePrevention(sock, revocationMessage) {
         const chatId = revocationMessage.key.remoteJid;
         const deleterId = revocationMessage.key.participant || revocationMessage.key.remoteJid;
         
-        console.log(`🔄 DELETE DETECTED | Message: ${deletedMessageId} | By: ${deleterId.split('@')[0]}`);
+        console.log(`🔄 DELETE DETECTED | Message: ${deletedMessageId} | By: ${await resolvePhone(sock, deleterId)}`);
         
         // Check if protection is active
         const shouldProtect = await shouldProtectChat(sock, chatId);

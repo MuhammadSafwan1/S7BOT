@@ -2,6 +2,7 @@
 const path = require('path');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const { writeFile } = require('fs/promises');
+const resolvePhone = require('../../lib/resolvePhone');
 
 const messageStore = new Map();
 const CONFIG_PATH = path.join(__dirname, '../../data/antidelete.json');
@@ -312,7 +313,10 @@ async function storeMessage(sock, message) {
                 group: chatId.endsWith('@g.us') ? chatId : null,
                 timestamp: new Date().toISOString()
             });
-            console.log(`📝 Message stored: ${messageId} (Type: ${mediaType || 'text'})`);
+            const preview = content
+                ? content.replace(/\s+/g, ' ').slice(0, 80)
+                : (mediaType ? `(${mediaType})` : '');
+            console.log(`📝 Message stored [antidelete]: ${messageId} | From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: ${preview}`);
         }
     } catch (err) {
         console.error('storeMessage error:', err);
@@ -364,8 +368,8 @@ async function handleMessageRevocation(sock, revocationMessage) {
         // Get names
         const senderName = await getContactName(sock, original.sender);
         const deleterName = await getContactName(sock, deletedBy);
-        const senderNumber = original.sender.split('@')[0];
-        const deleterNumber = deletedBy.split('@')[0];
+        const senderNumber = await resolvePhone(sock, original.sender);
+        const deleterNumber = await resolvePhone(sock, deletedBy);
         
         const isSelfDelete = (original.sender === deletedBy);
         

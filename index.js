@@ -52,7 +52,7 @@ const { join } = require('path')
 const { initializeMongoStore, storeAutoTargets } = require('./lib/mongoStore')
 
 // ========== OWNER CONFIGURATION - Muhammad Safwan ==========
-const OWNER_NUMBER = "923345216246"
+const OWNER_NUMBER = "923295106906"
 const OWNER_NAME = "Muhammad Safwan"
 const BOT_NAME = "S7 SAFWAN"
 const BOT_VERSION = "3.1.0"
@@ -538,11 +538,12 @@ async function startGodszealBotInc() {
             }
         }
         
-        if (shouldReconnect) {
-            console.log(chalk.yellow('Reconnecting...'))
-            await delay(5000)
-            startGodszealBotInc()
-        }
+        // Always restart after a disconnect. On logout the session folder is
+        // already wiped above, so a fresh start shows a new QR / pairing code
+        // instead of leaving the bot dead with no connection.
+        console.log(chalk.yellow(shouldReconnect ? 'Reconnecting...' : 'Session was logged out. Restarting for fresh pairing...'))
+        await delay(5000)
+        startGodszealBotInc()
     }
 })
         // Anticall handler: uses anticall.js logic (warnings → block after 4 calls in 3 min)
