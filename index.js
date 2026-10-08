@@ -54,7 +54,7 @@ const { join } = require('path')
 const { initializeMongoStore, storeAutoTargets } = require('./lib/mongoStore')
 
 // ========== OWNER CONFIGURATION - Muhammad Safwan ==========
-const OWNER_NUMBER = "923295106906"
+const OWNER_NUMBER = "923345216246"
 const OWNER_NAME = "Muhammad Safwan"
 const BOT_NAME = "S7 SAFWAN"
 const BOT_VERSION = "3.1.0"

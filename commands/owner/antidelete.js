@@ -6,6 +6,37 @@ const resolvePhone = require('../../lib/resolvePhone');
 
 const messageStore = new Map();
 const groupNameCache = new Map(); // chatId -> group subject (avoids repeated groupMetadata calls)
+const contactNameCache = new Map(); // jid -> contact display name (avoids getContacts() per message)
+
+// Unwrap container messages: disappearing/view-once/edited/device-sent/template etc.
+function unwrapMessage(m) {
+    if (!m) return m;
+    if (m.ephemeralMessage?.message) return unwrapMessage(m.ephemeralMessage.message);
+    if (m.viewOnceMessage?.message) return unwrapMessage(m.viewOnceMessage.message);
+    if (m.viewOnceMessageV2?.message) return unwrapMessage(m.viewOnceMessageV2.message);
+    if (m.viewOnceMessageV2Extension?.message) return unwrapMessage(m.viewOnceMessageV2Extension.message);
+    if (m.documentWithCaptionMessage?.message) return unwrapMessage(m.documentWithCaptionMessage.message);
+    if (m.editedMessage?.message) return unwrapMessage(m.editedMessage.message);
+    if (m.deviceSentMessage?.message) return unwrapMessage(m.deviceSentMessage.message);
+    if (m.templateMessage?.hydratedTemplate?.hydratedContent) return unwrapMessage(m.templateMessage.hydratedTemplate.hydratedContent);
+    if (m.templateMessage?.fourRowTemplate?.content) return unwrapMessage(m.templateMessage.fourRowTemplate.content);
+    return m;
+}
+
+// Cached contact display name (empty string cached too, so no refetch spam)
+async function getCachedContactName(sock, jid) {
+    if (!jid) return '';
+    if (contactNameCache.has(jid)) return contactNameCache.get(jid);
+    let name = '';
+    try {
+        const contacts = await sock.getContacts();
+        const num = String(jid).split('@')[0].split(':')[0];
+        const c = contacts.find(x => x && (x.id === jid || String(x.id || '').split('@')[0].split(':')[0] === num));
+        name = c?.name || c?.notify || '';
+    } catch {}
+    contactNameCache.set(jid, name);
+    return name;
+}
 const CONFIG_PATH = path.join(__dirname, '../../data/antidelete.json');
 const TEMP_MEDIA_DIR = path.join(__dirname, '../tmp');
 
@@ -255,29 +286,38 @@ async function storeMessage(sock, message) {
             ? (sock.user?.id || message.key.participant || message.key.remoteJid)
             : (message.key.participant || message.key.remoteJid);
 
-        if (message.message?.conversation) {
-            content = message.message.conversation;
-        } else if (message.message?.extendedTextMessage?.text) {
-            content = message.message.extendedTextMessage.text;
-        } else if (message.message?.imageMessage) {
+        const m = unwrapMessage(message.message);
+
+        if (m?.conversation) {
+            content = m.conversation;
+        } else if (m?.extendedTextMessage?.text) {
+            content = m.extendedTextMessage.text;
+        } else if (m?.imageMessage) {
             mediaType = 'image';
-            content = message.message.imageMessage.caption || '';
-            mediaPath = await safeDownloadMedia(message.message.imageMessage, 'image', messageId, 'jpg');
-        } else if (message.message?.stickerMessage) {
+            content = m.imageMessage.caption || '';
+            mediaPath = await safeDownloadMedia(m.imageMessage, 'image', messageId, 'jpg');
+        } else if (m?.stickerMessage) {
             mediaType = 'sticker';
-            mediaPath = await safeDownloadMedia(message.message.stickerMessage, 'sticker', messageId, 'webp');
-        } else if (message.message?.videoMessage) {
+            mediaPath = await safeDownloadMedia(m.stickerMessage, 'sticker', messageId, 'webp');
+        } else if (m?.videoMessage) {
+            // Covers regular video AND GIF (gifPlayback) messages
             mediaType = 'video';
-            content = message.message.videoMessage.caption || '';
-            mediaPath = await safeDownloadMedia(message.message.videoMessage, 'video', messageId, 'mp4');
-        } else if (message.message?.audioMessage) {
+            content = m.videoMessage.caption || '';
+            mediaPath = await safeDownloadMedia(m.videoMessage, 'video', messageId, 'mp4');
+        } else if (m?.ptvMessage) {
+            // Round video note
+            mediaType = 'video';
+            content = m.ptvMessage.caption || '';
+            mediaPath = await safeDownloadMedia(m.ptvMessage, 'video', messageId, 'mp4');
+        } else if (m?.audioMessage) {
+            // Voice note (ptt) and regular audio
             mediaType = 'audio';
-            const mime = message.message.audioMessage.mimetype || '';
+            const mime = m.audioMessage.mimetype || '';
             const ext = mime.includes('mpeg') ? 'mp3' : (mime.includes('ogg') ? 'ogg' : 'mp3');
-            mediaPath = await safeDownloadMedia(message.message.audioMessage, 'audio', messageId, ext);
-        } else if (message.message?.documentMessage) {
+            mediaPath = await safeDownloadMedia(m.audioMessage, 'audio', messageId, ext);
+        } else if (m?.documentMessage) {
             mediaType = 'document';
-            const docMsg = message.message.documentMessage;
+            const docMsg = m.documentMessage;
             content = docMsg.caption || '';
             mimetype = docMsg.mimetype || 'application/octet-stream';
             fileName = docMsg.fileName || `document_${messageId}`;
@@ -289,7 +329,7 @@ async function storeMessage(sock, message) {
             
             mediaPath = await safeDownloadMedia(docMsg, 'document', messageId, ext);
             if (mediaPath) console.log(`📄 Document stored: ${fileName} (${mimetype})`);
-        } else if (message.message?.documentWithCaptionMessage?.message?.documentMessage) {
+        } else if (m?.documentWithCaptionMessage?.message?.documentMessage) {
             mediaType = 'document';
             const docMsg = message.message.documentWithCaptionMessage.message.documentMessage;
             content = docMsg.caption || '';
@@ -321,8 +361,8 @@ async function storeMessage(sock, message) {
             const preview = content
                 ? content.replace(/\s+/g, ' ').slice(0, 80)
                 : (mediaType ? `(${mediaType})` : '');
-            // Chat label: group name for groups, private chat otherwise
-            let chatLabel = '( private chat )';
+            // Destination label: To: <number> ( name ) for private, group name for groups
+            let chatLabel;
             if (chatId && chatId.endsWith('@g.us')) {
                 let groupName = groupNameCache.get(chatId);
                 if (!groupName) {
@@ -332,6 +372,16 @@ async function storeMessage(sock, message) {
                     } catch { groupName = 'Group'; }
                 }
                 chatLabel = `( group: ${groupName} )`;
+            } else {
+                // Recipient = jis ko message bheja gaya (fromMe -> partner, else -> owner/bot account)
+                const recipientJid = message.key.fromMe
+                    ? chatId
+                    : (sock.user?.id || chatId);
+                const recipientNum = await resolvePhone(sock, recipientJid);
+                const recipientName = await getCachedContactName(sock, recipientJid);
+                chatLabel = recipientName
+                    ? `To: ${recipientNum} ( ${recipientName} )`
+                    : `To: ${recipientNum}`;
             }
             // Pakistani time (AM/PM)
             const time = new Date().toLocaleTimeString('en-US', {
@@ -374,15 +424,8 @@ async function handleMessageRevocation(sock, revocationMessage) {
             deletedBy = sock.user.id;
         }
         
-        const botNumber = sock.user.id.split(':')[0];
-        const botJid = botNumber + '@s.whatsapp.net';
-        
-        // Don't report if bot deleted the message
-        if (deletedBy === botJid || deletedBy.includes(botNumber)) {
-            console.log('Bot deleted message, not reporting');
-            return;
-        }
-
+        // NOTE: report ALL deletions now (owner/bot deletions included) so group
+        // deletions and owner's own test deletions also recover to owner DM.
         const original = messageStore.get(deletedMessageId);
         if (!original) {
             console.log('Message not found in store:', deletedMessageId);

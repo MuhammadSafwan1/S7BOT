@@ -3,9 +3,9 @@ const settings = {
   author: 'S7 SAFWAN',
   botName: 'S7 SAFWAN',
   botOwner: 'S7 SAFWAN',
-  ownerNumber: '923295106906',          // ← Your Pakistan number
-  ownerNumbers: ['923295106906'],       // ← Your number
-  devNumbers: ['923295106906'],         // ← Your number
+  ownerNumber: '923345216246',          // ← Your Pakistan number
+  ownerNumbers: ['923345216246'],       // ← Your number
+  devNumbers: ['923345216246'],         // ← Your number
   commandPrefix: '.',
   newsletterJid: '120363419197664425@newsletter',
   telegramHandlersDir: 'handlers',
