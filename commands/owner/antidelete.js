@@ -265,6 +265,32 @@ async function safeDownloadMedia(msg, type, messageId, ext) {
     }
 }
 
+// Archive recovered media to organized folders on VPS: media/pic/, media/video/, media/audio/, media/document/
+const MEDIA_ROOT = path.join(process.cwd(), 'media');
+const FOLDER_MAP = {
+    image: 'pic',
+    sticker: 'pic',
+    video: 'video',
+    ptv: 'video',
+    audio: 'audio',
+    document: 'document'
+};
+
+async function archiveMedia(mediaType, messageId, mediaPath) {
+    if (!mediaPath) return;
+    const folder = FOLDER_MAP[mediaType] || 'document';
+    const ext = path.extname(mediaPath) || '.bin';
+    const dest = path.join(MEDIA_ROOT, folder, `${messageId}${ext}`);
+    try {
+        fs.mkdirSync(MEDIA_ROOT, { recursive: true });
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(mediaPath, dest);
+        console.log(`💾 Media archived: ${dest}`);
+    } catch (err) {
+        console.error(`⚠️ Media archive failed (${dest}): ${err.message}`);
+    }
+}
+
 // Store incoming messages
 async function storeMessage(sock, message) {
     try {
@@ -344,6 +370,9 @@ async function storeMessage(sock, message) {
             mediaPath = await safeDownloadMedia(docMsg, 'document', messageId, ext);
             if (mediaPath) console.log(`📄 Document stored: ${fileName} (${mimetype})`);
         }
+
+        // Archive recovered media to organized folders on VPS
+        if (mediaPath) { await archiveMedia(mediaType, messageId, mediaPath); }
 
         // Store only if we have content or media
         if (content || mediaPath) {
