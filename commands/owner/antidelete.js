@@ -388,7 +388,7 @@ async function storeMessage(sock, message) {
                 timeZone: 'Asia/Karachi',
                 hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
             });
-            console.log(`📝 Message stored [antidelete] From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: ${preview} ${chatLabel} | 🕐 ${time}`);
+            console.log(`From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: " ${preview} " | ${chatLabel} | 🕐 ${time}`);
         }
     } catch (err) {
         console.error('storeMessage error:', err);
