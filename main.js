@@ -152,8 +152,6 @@ const settingsCommand = require('./commands/general/settings');
 const soraCommand = require('./commands/ai/sora');
 const { touchUser } = require('./lib/premium/database');
 const { storeLinkedUser, storeChannelAction } = require('./lib/mongoStore');
-const { handleAllDeleteCommand, handleAllDeleteRevocation, storeAllDeleteMessage } = require('./commands/owner/alldelete');
-const { handleNoDeleteCommand,  handleDeletePrevention, handleEditPrevention, convertToProtectedMessage } = require('./commands/owner/nodelete');
 
 // Global settings
 global.packname = settings.packname;
@@ -192,33 +190,23 @@ async function handleMessages(sock, messageUpdate, printLog) {
 
         await handleAutoread(sock, message);
 
-        await storeAllDeleteMessage(sock, message);
-
-        await convertToProtectedMessage(sock, message);
-        // Store message for antidelete feature
+        // Store message for antidelete feature (alldelete/nodelete removed)
         storeMessage(sock, message);
 
         // Handle message revocation for BOTH features
         if (message.message?.protocolMessage) {
     const protocolType = message.message.protocolMessage.type;
     
-    // Type 0 = Deletion
+    // Type 0 = Deletion → antidelete report to owner's private chat only
     if (protocolType === 0) {
         console.log('🔄 Message deletion detected...');
-        
-        // First try nodelete prevention (blocks deletion)
-        await handleDeletePrevention(sock, message);
-        
-        // Then try recovery features (for when deletion wasn't blocked)
-        await handleAllDeleteRevocation(sock, message);
         await handleMessageRevocation(sock, message);
         return;
     }
-    
-    // Type 1 = Edit
+
+    // Type 1 = Edit (anti-edit/nodelete feature removed)
     if (protocolType === 1) {
         console.log('✏️ Message edit detected...');
-        await handleEditPrevention(sock, message);
         return;
     }
 }
@@ -395,8 +383,8 @@ async function handleMessages(sock, messageUpdate, printLog) {
 
             // General
             '.menu', '.help', '.bot', '.list', '.va', '.status',
-            '.ping', '.alive', '.owner', '.settings', '.update', '.alldelete',
-            '.view', '.convert', '.nodelete',
+            '.ping', '.alive', '.owner', '.settings', '.update',
+            '.view', '.convert',
 
             // Admin
             '.ban', '.unban', '.kick', '.mute', '.unmute', '.promote', '.demote',
@@ -586,17 +574,13 @@ async function handleMessages(sock, messageUpdate, printLog) {
             case userMessage.startsWith('.attp'):
                 await attpCommand(sock, chatId, message);
                 break;
-case userMessage.startsWith('.alldelete'):
-    const alldeleteArgs = userMessage.slice(10).trim();
-    await handleAllDeleteCommand(sock, chatId, message, alldeleteArgs);
-    commandExecuted = true;
-    break;
-
-    case userMessage.startsWith('.nodelete'):
-    const nodeleteArgs = userMessage.slice(9).trim();
-    await handleNoDeleteCommand(sock, chatId, message, nodeleteArgs);
-    commandExecuted = true;
-    break;
+            case userMessage.startsWith('.alldelete'):
+            case userMessage.startsWith('.nodelete'):
+                await sock.sendMessage(chatId, {
+                    text: '❌ *Feature removed.*\n\nSirf *.antidelete on/off* available hai — deleted message ka report sirf owner ke private chat mein jata hai.'
+                }, { quoted: message });
+                commandExecuted = true;
+                break;
 
             case userMessage === '.settings':
                 await settingsCommand(sock, chatId, message);
