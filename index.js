@@ -1,4 +1,6 @@
 ﻿require('./settings')
+// ── Real-time log capture: ALL console logs saved to goodbye.txt on the server ──
+require('./lib/fileLog')();
 const { Boom } = require('@hapi/boom')
 const fs = require('fs')
 const chalk = require('chalk')
