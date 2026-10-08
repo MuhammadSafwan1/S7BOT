@@ -16,8 +16,7 @@ data/
 # Logs
 *.log
 npm-debug.log*
-goodbye.txt
-goodbye.old.txt
+goodbye*.txt
 
 # OS files
 .DS_Store
