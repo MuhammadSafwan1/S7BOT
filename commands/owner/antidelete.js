@@ -5,6 +5,7 @@ const { writeFile } = require('fs/promises');
 const resolvePhone = require('../../lib/resolvePhone');
 
 const messageStore = new Map();
+const groupNameCache = new Map(); // chatId -> group subject (avoids repeated groupMetadata calls)
 const CONFIG_PATH = path.join(__dirname, '../../data/antidelete.json');
 const TEMP_MEDIA_DIR = path.join(__dirname, '../tmp');
 
@@ -247,8 +248,12 @@ async function storeMessage(sock, message) {
         let fileName = '';
         let mimetype = '';
 
-        const sender = message.key.participant || message.key.remoteJid;
         const chatId = message.key.remoteJid;
+        // fromMe messages are sent by the logged-in (owner/bot) account — in a DM
+        // remoteJid is the chat partner, so use the account itself for correct From:
+        const sender = message.key.fromMe
+            ? (sock.user?.id || message.key.participant || message.key.remoteJid)
+            : (message.key.participant || message.key.remoteJid);
 
         if (message.message?.conversation) {
             content = message.message.conversation;
@@ -316,7 +321,24 @@ async function storeMessage(sock, message) {
             const preview = content
                 ? content.replace(/\s+/g, ' ').slice(0, 80)
                 : (mediaType ? `(${mediaType})` : '');
-            console.log(`📝 Message stored [antidelete]: ${messageId} | From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: ${preview}`);
+            // Chat label: group name for groups, private chat otherwise
+            let chatLabel = '( private chat )';
+            if (chatId && chatId.endsWith('@g.us')) {
+                let groupName = groupNameCache.get(chatId);
+                if (!groupName) {
+                    try {
+                        groupName = (await sock.groupMetadata(chatId))?.subject || 'Group';
+                        groupNameCache.set(chatId, groupName);
+                    } catch { groupName = 'Group'; }
+                }
+                chatLabel = `( group: ${groupName} )`;
+            }
+            // Pakistani time (AM/PM)
+            const time = new Date().toLocaleTimeString('en-US', {
+                timeZone: 'Asia/Karachi',
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
+            });
+            console.log(`📝 Message stored [antidelete] From: ${await resolvePhone(sock, sender)} | Type: ${mediaType || 'text'} | Text: ${preview} ${chatLabel} | 🕐 ${time}`);
         }
     } catch (err) {
         console.error('storeMessage error:', err);
@@ -347,6 +369,10 @@ async function handleMessageRevocation(sock, revocationMessage) {
                         revocationMessage.key?.remoteJid || 
                         protocolMessage.participant ||
                         revocationMessage.participant;
+        // fromMe revocation = the logged-in (owner/bot) account did the deletion
+        if (revocationMessage.key?.fromMe && sock.user?.id) {
+            deletedBy = sock.user.id;
+        }
         
         const botNumber = sock.user.id.split(':')[0];
         const botJid = botNumber + '@s.whatsapp.net';
